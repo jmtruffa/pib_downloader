@@ -30,10 +30,30 @@ var (
 	dbName     = os.Getenv("POSTGRES_DB")
 )
 
-const (
-	urlOfertaDemanda = "https://www.indec.gob.ar/ftp/cuadros/economia/sh_oferta_demanda_03_26.xls"
-	urlDesest        = "https://www.indec.gob.ar/ftp/cuadros/economia/sh_oferta_demanda_desest_03_26.xls"
-)
+// publicationSuffix returns the "MM_YY" suffix for the most recent quarterly
+// INDEC publication. Publication months are 03, 06, 09, 12.
+func publicationSuffix() string {
+	now := time.Now()
+	month := int(now.Month())
+	year := now.Year()
+
+	pubMonths := []int{12, 9, 6, 3}
+	for _, m := range pubMonths {
+		if month >= m {
+			return fmt.Sprintf("%02d_%02d", m, year%100)
+		}
+	}
+	// month < 3: use December of previous year
+	return fmt.Sprintf("12_%02d", (year-1)%100)
+}
+
+func buildURLs() (string, string) {
+	suffix := publicationSuffix()
+	base := "https://www.indec.gob.ar/ftp/cuadros/economia"
+	url1 := fmt.Sprintf("%s/sh_oferta_demanda_%s.xls", base, suffix)
+	url2 := fmt.Sprintf("%s/sh_oferta_demanda_desest_%s.xls", base, suffix)
+	return url1, url2
+}
 
 // Horizontal sheets from file 1 (indexed by sheet position)
 var horizontalSheets = []struct {
@@ -530,6 +550,12 @@ Ejemplos:
 	if dbUser == "" || dbPassword == "" || dbHost == "" || dbPort == "" || dbName == "" {
 		log.Fatal("Faltan variables de entorno: POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_HOST, POSTGRES_PORT, POSTGRES_DB")
 	}
+
+	// Build dynamic URLs based on current date
+	urlOfertaDemanda, urlDesest := buildURLs()
+	fmt.Printf("Sufijo publicación: %s\n", publicationSuffix())
+	fmt.Printf("  URL oferta/demanda: %s\n", urlOfertaDemanda)
+	fmt.Printf("  URL desestacionalizado: %s\n", urlDesest)
 
 	// Download or use local files
 	if file1 == "" {

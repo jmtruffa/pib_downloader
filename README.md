@@ -4,7 +4,7 @@ Descarga e ingesta los datos de PBI (Producto Bruto Interno) publicados por INDE
 
 ## Fuentes de datos
 
-### Archivo 1: `sh_oferta_demanda_03_26.xls`
+### Archivo 1: `sh_oferta_demanda_{MM}_{YY}.xls`
 
 Hojas con layout horizontal (filas = categorías, columnas = trimestres/años):
 
@@ -17,7 +17,7 @@ Hojas con layout horizontal (filas = categorías, columnas = trimestres/años):
 | cuadro 11 | 899 | Oferta y demanda globales, % del PIB a precios corrientes |
 | cuadro 12 | 2,310 | PIB por categoría de tabulación, millones de pesos a precios corrientes |
 
-### Archivo 2: `sh_oferta_demanda_desest_03_26.xls`
+### Archivo 2: `sh_oferta_demanda_desest_{MM}_{YY}.xls`
 
 Hojas con layout vertical (filas = trimestres):
 
@@ -27,6 +27,22 @@ Hojas con layout vertical (filas = trimestres):
 | desestacionalizado v | 522 | Variaciones desestacionalizadas |
 
 **Total: ~9,582 observaciones**
+
+## URLs dinámicas
+
+Las URLs de descarga se construyen automáticamente en base a la fecha actual. INDEC publica trimestralmente (marzo, junio, septiembre, diciembre), y el sufijo del archivo refleja la última publicación.
+
+El sufijo `MM_YY` se calcula así:
+- Se toma el mayor mes de publicación (03, 06, 09, 12) que sea <= al mes actual
+- Si el mes actual es enero o febrero, se usa diciembre del año anterior
+
+| Fecha actual | Sufijo |
+|---|---|
+| Enero 2027 | `12_26` |
+| Marzo 2027 | `03_27` |
+| Mayo 2027 | `03_27` |
+| Junio 2027 | `06_27` |
+| Diciembre 2027 | `12_27` |
 
 ## Requisitos
 
@@ -78,6 +94,11 @@ psql "postgres://$POSTGRES_USER:$POSTGRES_PASSWORD@$POSTGRES_HOST:$POSTGRES_PORT
 | `-file2` | Ruta al archivo XLS desestacionalizado. Si se omite, descarga de INDEC. |
 | `-truncate` | Trunca la tabla antes de insertar (carga completa). |
 | `-upsert` | Usa `INSERT ... ON CONFLICT` en vez de `COPY`. Seguro para re-ingestas. |
+
+### Modos de inserción
+
+- **COPY (default):** Inserta en bulk todas las observaciones. Requiere `-truncate` para evitar errores por duplicados.
+- **UPSERT (`-upsert`):** Inserta todas las observaciones; si la clave `(fecha, frecuencia, variable, cuadro)` ya existe, sobreescribe el valor y actualiza `ingested_at`. Ideal para cron.
 
 ## Esquema de datos
 
