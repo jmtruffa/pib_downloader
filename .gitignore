@@ -1,2 +1,6 @@
 .claude/
+.atl/
 DS_STORE
+
+# Binario compilado
+/pib_downloader
