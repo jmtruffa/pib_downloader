@@ -459,6 +459,59 @@ func parseVerticalSheet(sheet *xls.WorkSheet, cuadro string) ([]Observation, err
 	return obs, nil
 }
 
+// ---------------------- SANITY CHECK ----------------------
+
+// maxCountDrop is how far the observation count may fall below what the table
+// already holds before the run is treated as suspect.
+const maxCountDrop = 0.10
+
+// checkCountDrop refuses to write when far fewer observations were parsed than
+// the table already contains. The only previous guard was len(allObs) == 0,
+// which a partially parsed file sails through: pointing the tool at the wrong
+// file yields 1,062 observations instead of 9,655, and under -truncate that
+// replaces good data with incomplete data reporting success.
+//
+// Growth is never suspect: every INDEC publication adds a quarter to the series.
+func checkCountDrop(db *sql.DB, parsed int, force bool) error {
+	var current int
+	if err := db.QueryRow("SELECT count(*) FROM pbi_data").Scan(&current); err != nil {
+		return fmt.Errorf("error contando filas actuales: %v", err)
+	}
+	return evaluateCountDrop(parsed, current, force)
+}
+
+// evaluateCountDrop holds the decision itself, split from the query so it can be
+// exercised without a database.
+func evaluateCountDrop(parsed, current int, force bool) error {
+	if current == 0 {
+		fmt.Println("Chequeo de caída: tabla vacía, no hay con qué comparar.")
+		return nil
+	}
+
+	if parsed >= current {
+		fmt.Printf("Chequeo de caída: %d observaciones contra %d en la tabla. OK.\n", parsed, current)
+		return nil
+	}
+
+	drop := float64(current-parsed) / float64(current)
+	if drop <= maxCountDrop {
+		fmt.Printf("Chequeo de caída: %d contra %d en la tabla (-%.1f%%). Dentro del margen.\n",
+			parsed, current, drop*100)
+		return nil
+	}
+
+	if force {
+		fmt.Printf("ADVERTENCIA: %d observaciones contra %d en la tabla (-%.1f%%). Continúa por -force.\n",
+			parsed, current, drop*100)
+		return nil
+	}
+
+	return fmt.Errorf("caída del %.1f%%: se parsearon %d observaciones y la tabla tiene %d "+
+		"(máximo tolerado: %.0f%%). Puede indicar un cambio de formato en el archivo de INDEC. "+
+		"Revisar el parseo y, si la caída es legítima, repetir con -force",
+		drop*100, parsed, current, maxCountDrop*100)
+}
+
 // ---------------------- DATABASE INSERT ----------------------
 
 func insertCopy(db *sql.DB, observations []Observation, truncateFirst bool) error {
@@ -612,6 +665,10 @@ Opciones:
         Trunca la tabla antes de insertar (carga completa). Default: false.
   -upsert
         Usa INSERT ... ON CONFLICT (upsert) en vez de COPY. Default: false.
+  -force
+        Ignora el chequeo de caída de observaciones. Default: false.
+        El proceso aborta antes de escribir si se parsean mas de un 10%% menos
+        de observaciones que las que ya tiene la tabla.
 
 Variables de entorno requeridas:
   POSTGRES_USER, POSTGRES_PASSWORD, POSTGRES_HOST, POSTGRES_PORT, POSTGRES_DB
@@ -633,12 +690,14 @@ Ejemplos:
 		file2    string
 		truncate bool
 		upsert   bool
+		force    bool
 	)
 
 	flag.StringVar(&file1, "file1", "", "Ruta a archivo XLS de oferta y demanda")
 	flag.StringVar(&file2, "file2", "", "Ruta a archivo XLS desestacionalizado")
 	flag.BoolVar(&truncate, "truncate", false, "Truncar tabla antes de insertar")
 	flag.BoolVar(&upsert, "upsert", false, "Usar upsert (ON CONFLICT) en vez de COPY")
+	flag.BoolVar(&force, "force", false, "Ignorar el chequeo de caída de observaciones")
 	flag.Parse()
 
 	// Validate DB config
@@ -761,6 +820,12 @@ Ejemplos:
 		log.Fatalf("Error ping DB: %v", err)
 	}
 	fmt.Println("Conectado a PostgreSQL.")
+
+	// Runs before any write, so an aborted check leaves the table untouched —
+	// including under -truncate, where the delete happens first.
+	if err := checkCountDrop(db, len(allObs), force); err != nil {
+		log.Fatalf("Error: %v", err)
+	}
 
 	if upsert {
 		fmt.Println("Modo: UPSERT (ON CONFLICT)")

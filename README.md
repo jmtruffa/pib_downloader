@@ -97,6 +97,25 @@ psql "postgres://$POSTGRES_USER:$POSTGRES_PASSWORD@$POSTGRES_HOST:$POSTGRES_PORT
 | `-file2` | Ruta al archivo XLS desestacionalizado. Si se omite, descarga de INDEC. |
 | `-truncate` | Trunca la tabla antes de insertar (carga completa). |
 | `-upsert` | Usa `INSERT ... ON CONFLICT` en vez de `COPY`. Seguro para re-ingestas. |
+| `-force` | Ignora el chequeo de caída de observaciones. |
+
+### Chequeo de caída
+
+Antes de escribir nada, el proceso compara cuántas observaciones parseó contra las que ya tiene
+la tabla. Si la caída supera el **10%**, aborta sin tocar la base.
+
+Existe porque el único guard previo era "¿parseé al menos una observación?", y eso lo pasa
+cualquier parseo parcial: apuntar la herramienta al archivo equivocado produce 1.062 observaciones
+en vez de 9.655, y con `-truncate` eso reemplaza datos buenos por datos incompletos informando
+éxito.
+
+El crecimiento nunca es sospechoso: cada publicación de INDEC suma un trimestre a la serie.
+
+Si la caída es legítima, repetir con `-force`:
+
+```bash
+./pib_downloader -upsert -force
+```
 
 ### Modos de inserción
 
