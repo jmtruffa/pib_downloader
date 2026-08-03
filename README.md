@@ -10,12 +10,12 @@ Hojas con layout horizontal (filas = categorías, columnas = trimestres/años):
 
 | Hoja | Observaciones | Descripción |
 |------|--------------|-------------|
-| cuadro 1 | 1,060 | Oferta y demanda globales, millones de pesos a precios de 2004 |
-| cuadro 3 | 898 | Oferta y demanda globales, % del PIB a precios constantes |
-| cuadro 4 | 2,310 | PIB por categoría de tabulación, millones de pesos a precios de 2004 |
-| cuadro 8 | 1,055 | Oferta y demanda globales, millones de pesos a precios corrientes |
-| cuadro 11 | 899 | Oferta y demanda globales, % del PIB a precios corrientes |
-| cuadro 12 | 2,310 | PIB por categoría de tabulación, millones de pesos a precios corrientes |
+| cuadro 1 | 1,066 | Oferta y demanda globales, millones de pesos a precios de 2004 |
+| cuadro 3 | 902 | Oferta y demanda globales, % del PIB a precios constantes |
+| cuadro 4 | 2,331 | PIB por categoría de tabulación, millones de pesos a precios de 2004 |
+| cuadro 8 | 1,061 | Oferta y demanda globales, millones de pesos a precios corrientes |
+| cuadro 11 | 902 | Oferta y demanda globales, % del PIB a precios corrientes |
+| cuadro 12 | 2,331 | PIB por categoría de tabulación, millones de pesos a precios corrientes |
 
 ### Archivo 2: `sh_oferta_demanda_desest_{MM}_{YY}.xls`
 
@@ -23,10 +23,13 @@ Hojas con layout vertical (filas = trimestres):
 
 | Hoja | Observaciones | Descripción |
 |------|--------------|-------------|
-| desestacionalizado n | 528 | Valores desestacionalizados |
-| desestacionalizado v | 522 | Variaciones desestacionalizadas |
+| desestacionalizado n | 534 | Valores desestacionalizados |
+| desestacionalizado v | 528 | Variaciones desestacionalizadas |
 
-**Total: ~9,582 observaciones**
+**Total: 9,655 observaciones** (medido sobre la publicación `06_26`, serie 2004-2026)
+
+Los conteos crecen con cada publicación trimestral: el archivo trae la serie histórica completa,
+así que cada trimestre nuevo suma filas a todas las hojas.
 
 ## URLs dinámicas
 
@@ -112,6 +115,22 @@ Cada fila en `pbi_data` es una observación:
 | `cuadro` | TEXT | Hoja de origen (identifica precios constantes/corrientes, %, desest) |
 | `valor` | DOUBLE PRECISION | Valor numérico |
 | `ingested_at` | TIMESTAMPTZ | Timestamp de ingesta |
+| `codigo` | TEXT NULL | Código SNA de INDEC (ej: `P7`, `P3_S14_S15`, `B1b`) |
+
+### Sobre `codigo`
+
+Las hojas horizontales traen el código del Sistema de Cuentas Nacionales en la columna 0 y la
+descripción en la columna 1. El código es la identidad estable de la serie: el rótulo cambia entre
+publicaciones (las llamadas a nota al pie como `Consumo privado (5)` se mueven), el código no.
+
+Queda en `NULL` en dos casos:
+
+- Filas agregadas que INDEC publica sin código: `Oferta Global`, `Demanda Global`,
+  `Discrepancia estadística`.
+- Hojas desestacionalizadas (archivo 2), que no tienen columna de códigos.
+
+La clave única sigue siendo `(fecha, frecuencia, variable, cuadro)`, no el código: hay filas sin
+código, y un mismo código aparece en varios cuadros.
 
 ## Consultas de ejemplo
 

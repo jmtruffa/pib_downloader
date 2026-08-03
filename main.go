@@ -90,6 +90,10 @@ type Observation struct {
 	Variable   string
 	Cuadro     string
 	Valor      float64
+	// Codigo holds the SNA code from column 0 of the horizontal sheets
+	// (e.g. "P7", "P3_S14_S15"). Nil when the source row has no code —
+	// aggregate rows such as "Oferta Global" — and for vertical sheets.
+	Codigo *string
 }
 
 // ---------------------- DOWNLOAD ----------------------
@@ -248,14 +252,20 @@ func parseHorizontalSheet(sheet *xls.WorkSheet, cuadro string) ([]Observation, e
 			continue
 		}
 
-		variable := cellStr(row, 0)
+		// Column 0 holds the SNA code, column 1 the description. Some aggregate
+		// rows ("Oferta Global", "Demanda Global", "Discrepancia estadística")
+		// have a description but no code, so the code alone cannot gate the row.
+		// Headers ("Código"), footnotes, "Nota:" and "Fuente:" all live in column
+		// 0 with column 1 empty, so they are filtered by the description check.
+		codigo := cellStr(row, 0)
+		variable := cellStr(row, 1)
 		if variable == "" {
 			continue
 		}
-		// Stop at footnotes
-		if strings.HasPrefix(variable, "(") || strings.HasPrefix(variable, "Nota") ||
-			strings.HasPrefix(variable, "Fuente") {
-			continue
+
+		var codigoPtr *string
+		if codigo != "" {
+			codigoPtr = &codigo
 		}
 
 		// Check if row has any numeric data
@@ -285,6 +295,7 @@ func parseHorizontalSheet(sheet *xls.WorkSheet, cuadro string) ([]Observation, e
 						Variable:   variable,
 						Cuadro:     cuadro,
 						Valor:      *v,
+						Codigo:     codigoPtr,
 					})
 				}
 			}
@@ -297,6 +308,7 @@ func parseHorizontalSheet(sheet *xls.WorkSheet, cuadro string) ([]Observation, e
 					Variable:   variable,
 					Cuadro:     cuadro,
 					Valor:      *v,
+					Codigo:     codigoPtr,
 				})
 			}
 		}
@@ -429,13 +441,13 @@ func insertCopy(db *sql.DB, observations []Observation, truncateFirst bool) erro
 	}
 	defer tx.Rollback()
 
-	stmt, err := tx.Prepare(`COPY pbi_data (fecha, frecuencia, variable, cuadro, valor) FROM STDIN`)
+	stmt, err := tx.Prepare(`COPY pbi_data (fecha, frecuencia, variable, cuadro, valor, codigo) FROM STDIN`)
 	if err != nil {
 		return fmt.Errorf("error preparando COPY: %v", err)
 	}
 
 	for i, o := range observations {
-		_, err := stmt.Exec(o.Fecha.Format("2006-01-02"), o.Frecuencia, o.Variable, o.Cuadro, o.Valor)
+		_, err := stmt.Exec(o.Fecha.Format("2006-01-02"), o.Frecuencia, o.Variable, o.Cuadro, o.Valor, o.Codigo)
 		if err != nil {
 			return fmt.Errorf("error en COPY fila %d: %v", i, err)
 		}
@@ -470,11 +482,12 @@ func insertUpsert(db *sql.DB, observations []Observation, truncateFirst bool) er
 	defer tx.Rollback()
 
 	stmt, err := tx.Prepare(`
-		INSERT INTO pbi_data (fecha, frecuencia, variable, cuadro, valor)
-		VALUES ($1, $2, $3, $4, $5)
+		INSERT INTO pbi_data (fecha, frecuencia, variable, cuadro, valor, codigo)
+		VALUES ($1, $2, $3, $4, $5, $6)
 		ON CONFLICT (fecha, frecuencia, variable, cuadro)
 		DO UPDATE SET
 			valor = EXCLUDED.valor,
+			codigo = EXCLUDED.codigo,
 			ingested_at = NOW()
 	`)
 	if err != nil {
@@ -483,7 +496,7 @@ func insertUpsert(db *sql.DB, observations []Observation, truncateFirst bool) er
 	defer stmt.Close()
 
 	for i, o := range observations {
-		_, err := stmt.Exec(o.Fecha.Format("2006-01-02"), o.Frecuencia, o.Variable, o.Cuadro, o.Valor)
+		_, err := stmt.Exec(o.Fecha.Format("2006-01-02"), o.Frecuencia, o.Variable, o.Cuadro, o.Valor, o.Codigo)
 		if err != nil {
 			return fmt.Errorf("error upsert fila %d: %v", i, err)
 		}
