@@ -35,8 +35,3 @@ incompletos.
 - Mínimo esperado por hoja.
 - Comparar contra el `count(*)` actual de la tabla y abortar si la caída supera un umbral
   (ej. 10%), con un flag `-force` para saltearlo cuando el cambio sea legítimo.
-
-## 3. Limpieza pendiente
-
-- `DROP TABLE pbi_data_backup_20260803;` — backup de 17.033 filas tomado antes del `-truncate`
-  del 2026-08-03. Borrar cuando la ingesta nueva esté confirmada en uso.
