@@ -55,26 +55,60 @@ func buildURLs() (string, string) {
 	return url1, url2
 }
 
-// Horizontal sheets from file 1 (indexed by sheet position)
-var horizontalSheets = []struct {
-	index int
-	name  string
-}{
-	{1, "cuadro 1"},
-	{3, "cuadro 3"},
-	{4, "cuadro 4"},
-	{8, "cuadro 8"},
-	{11, "cuadro 11"},
-	{12, "cuadro 12"},
+// Sheets are located by name, never by position. INDEC has already changed the
+// layout of these files once (splitting the code and the description into two
+// columns); an index that silently points at the wrong cuadro would ingest real
+// numbers under the wrong label, with no error to notice.
+//
+// These names are also the values stored in pbi_data.cuadro, so they must stay
+// stable even if INDEC re-cases or re-spaces the sheet title.
+
+// Horizontal sheets from file 1 (rows = categories, columns = quarters/years)
+var horizontalSheetNames = []string{
+	"cuadro 1",
+	"cuadro 3",
+	"cuadro 4",
+	"cuadro 8",
+	"cuadro 11",
+	"cuadro 12",
 }
 
-// Vertical sheets from file 2
-var verticalSheetDefs = []struct {
-	index  int
-	cuadro string
-}{
-	{0, "desestacionalizado n"},
-	{1, "desestacionalizado v"},
+// Vertical sheets from file 2 (rows = quarters)
+var verticalSheetNames = []string{
+	"desestacionalizado n",
+	"desestacionalizado v",
+}
+
+// normalizeSheetName makes lookups tolerant of the cosmetic differences INDEC
+// introduces between publications: "Cuadro 1", "cuadro  1 " and "CUADRO 1" all
+// collapse to "cuadro 1". It deliberately does NOT do prefix matching, so
+// "cuadro 1" never resolves to "cuadro 10".
+func normalizeSheetName(name string) string {
+	return strings.Join(strings.Fields(strings.ToLower(name)), " ")
+}
+
+// findSheet resolves a sheet by name and reports the position it was found at,
+// so the resolved mapping can be logged and audited.
+func findSheet(wb *xls.WorkBook, name string) (*xls.WorkSheet, int, error) {
+	want := normalizeSheetName(name)
+	for i := 0; i < wb.NumSheets(); i++ {
+		s := wb.GetSheet(i)
+		if s == nil {
+			continue
+		}
+		if normalizeSheetName(s.Name) == want {
+			return s, i, nil
+		}
+	}
+
+	var available []string
+	for i := 0; i < wb.NumSheets(); i++ {
+		if s := wb.GetSheet(i); s != nil {
+			available = append(available, fmt.Sprintf("[%d] %q", i, s.Name))
+		}
+	}
+	return nil, -1, fmt.Errorf("hoja %q no encontrada. Hojas disponibles: %s",
+		name, strings.Join(available, ", "))
 }
 
 func databaseURL() string {
@@ -616,17 +650,19 @@ Ejemplos:
 
 	var allObs []Observation
 
-	for _, hs := range horizontalSheets {
-		sheet := wb1.GetSheet(hs.index)
-		if sheet == nil {
-			fmt.Printf("ADVERTENCIA: hoja índice %d no encontrada, saltando %q.\n", hs.index, hs.name)
-			continue
-		}
-
-		obs, err := parseHorizontalSheet(sheet, hs.name)
+	// A missing or unparseable sheet aborts the run. Continuing would produce a
+	// partial ingest that looks successful, which is how the previous format
+	// change went unnoticed.
+	for _, name := range horizontalSheetNames {
+		sheet, idx, err := findSheet(wb1, name)
 		if err != nil {
-			fmt.Printf("ERROR en hoja %q: %v\n", hs.name, err)
-			continue
+			log.Fatalf("Error resolviendo hoja: %v", err)
+		}
+		fmt.Printf("  %q → hoja [%d] %q\n", name, idx, sheet.Name)
+
+		obs, err := parseHorizontalSheet(sheet, name)
+		if err != nil {
+			log.Fatalf("Error en hoja %q: %v", name, err)
 		}
 		allObs = append(allObs, obs...)
 	}
@@ -646,17 +682,16 @@ Ejemplos:
 		}
 	}
 
-	for _, vs := range verticalSheetDefs {
-		sheet := wb2.GetSheet(vs.index)
-		if sheet == nil {
-			fmt.Printf("ADVERTENCIA: hoja índice %d no encontrada, saltando %q.\n", vs.index, vs.cuadro)
-			continue
-		}
-
-		obs, err := parseVerticalSheet(sheet, vs.cuadro)
+	for _, name := range verticalSheetNames {
+		sheet, idx, err := findSheet(wb2, name)
 		if err != nil {
-			fmt.Printf("ERROR en hoja %q: %v\n", vs.cuadro, err)
-			continue
+			log.Fatalf("Error resolviendo hoja: %v", err)
+		}
+		fmt.Printf("  %q → hoja [%d] %q\n", name, idx, sheet.Name)
+
+		obs, err := parseVerticalSheet(sheet, name)
+		if err != nil {
+			log.Fatalf("Error en hoja %q: %v", name, err)
 		}
 		allObs = append(allObs, obs...)
 	}
