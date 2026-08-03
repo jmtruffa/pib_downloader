@@ -515,9 +515,64 @@ func insertUpsert(db *sql.DB, observations []Observation, truncateFirst bool) er
 	}
 	defer tx.Rollback()
 
-	stmt, err := tx.Prepare(`
+	// Bulk-load into a staging table first, then merge in a single statement.
+	// One INSERT per observation costs a network round trip each: ~6 minutes for
+	// ~9,600 rows against a remote database, versus roughly a second this way.
+	// The conflict check is not what was slow — it is an index lookup either
+	// way; the per-statement protocol overhead was.
+	//
+	// ON COMMIT DROP ties the staging table to this transaction, so a failed run
+	// leaves nothing behind. "ord" preserves the input order for deduplication.
+	if _, err := tx.Exec(`
+		CREATE TEMP TABLE pbi_data_stage (
+			ord        BIGINT,
+			fecha      DATE,
+			frecuencia TEXT,
+			variable   TEXT,
+			cuadro     TEXT,
+			valor      DOUBLE PRECISION,
+			codigo     TEXT
+		) ON COMMIT DROP
+	`); err != nil {
+		return fmt.Errorf("error creando tabla de staging: %v", err)
+	}
+
+	stmt, err := tx.Prepare(`COPY pbi_data_stage (ord, fecha, frecuencia, variable, cuadro, valor, codigo) FROM STDIN`)
+	if err != nil {
+		return fmt.Errorf("error preparando COPY a staging: %v", err)
+	}
+
+	for i, o := range observations {
+		_, err := stmt.Exec(i, o.Fecha.Format("2006-01-02"), o.Frecuencia, o.Variable, o.Cuadro, o.Valor, o.Codigo)
+		if err != nil {
+			return fmt.Errorf("error en COPY a staging, fila %d: %v", i, err)
+		}
+	}
+
+	if err := stmt.Close(); err != nil {
+		return fmt.Errorf("error cerrando COPY a staging: %v", err)
+	}
+
+	// DISTINCT ON keeps the last occurrence of each key, matching the semantics
+	// of the previous row-by-row upsert. Without it a repeated key would abort
+	// the whole statement: ON CONFLICT DO UPDATE cannot touch the same row twice.
+	var duplicados int
+	if err := tx.QueryRow(`
+		SELECT count(*) - count(DISTINCT (fecha, frecuencia, variable, cuadro))
+		FROM pbi_data_stage
+	`).Scan(&duplicados); err != nil {
+		return fmt.Errorf("error contando duplicados en staging: %v", err)
+	}
+	if duplicados > 0 {
+		fmt.Printf("  ADVERTENCIA: %d observaciones con clave repetida; se conserva la última de cada una.\n", duplicados)
+	}
+
+	res, err := tx.Exec(`
 		INSERT INTO pbi_data (fecha, frecuencia, variable, cuadro, valor, codigo)
-		VALUES ($1, $2, $3, $4, $5, $6)
+		SELECT DISTINCT ON (fecha, frecuencia, variable, cuadro)
+		       fecha, frecuencia, variable, cuadro, valor, codigo
+		FROM pbi_data_stage
+		ORDER BY fecha, frecuencia, variable, cuadro, ord DESC
 		ON CONFLICT (fecha, frecuencia, variable, cuadro)
 		DO UPDATE SET
 			valor = EXCLUDED.valor,
@@ -525,18 +580,11 @@ func insertUpsert(db *sql.DB, observations []Observation, truncateFirst bool) er
 			ingested_at = NOW()
 	`)
 	if err != nil {
-		return fmt.Errorf("error preparando upsert: %v", err)
+		return fmt.Errorf("error en merge desde staging: %v", err)
 	}
-	defer stmt.Close()
 
-	for i, o := range observations {
-		_, err := stmt.Exec(o.Fecha.Format("2006-01-02"), o.Frecuencia, o.Variable, o.Cuadro, o.Valor, o.Codigo)
-		if err != nil {
-			return fmt.Errorf("error upsert fila %d: %v", i, err)
-		}
-		if (i+1)%5000 == 0 {
-			fmt.Printf("  Upserted %d/%d filas...\n", i+1, len(observations))
-		}
+	if n, err := res.RowsAffected(); err == nil {
+		fmt.Printf("  Merge: %d filas insertadas o actualizadas.\n", n)
 	}
 
 	if err := tx.Commit(); err != nil {
